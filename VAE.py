@@ -3,68 +3,92 @@ import tensorflow.keras as keras
 
 
 # FC encoder part
-def Encoder_FC(X, n_hidden, z_dim, keep_prob):
-	''' input:	X --- input MNIST image as a 1D vector (dtype=tf.uint8)
+def Encoder_FC(X, n_hidden, z_dim):
+	''' input:	X --- input MNIST image as batch of 1D vectors (shape=(B,L), dtype=tf.int32)
 				n_hidden --- FC layer hidden units
 				z_dim --- output code dimensions
-				keep_prob --- keep prob for dropout
-		output:	miu --- the sampling distribution's mean as 1D vector (dtype=tf.float32) 
-				std --- the sampling distribution's sigma as 1D vector (dtype=tf.float32) '''
+		output:	miu --- the sampling distribution's mean as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) 
+				std --- the sampling distribution's sigma as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) '''
 	# build 1st FC layer
 	feature = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
 								 activation='relu')(X)
-	# dropout
-	feature = keras.layers.Dropout(1-keep_prob)(feature)
 	# build 2nd FC layer
 	feature = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
 								 activation='relu')(feature)
-	# dropout
-	feature = keras.layers.Dropout(1-keep_prob)(feature)
 	# output layer
 	output = keras.layers.Dense(units=2*z_dim, 
+								kernel_initializer='he_normal', 
 								activation=None)(feature)
 	# mean part (miu)
-	miu = tf.to_float(output[:, 0:z_dim])
+	miu = output[:, 0:z_dim]
 	# sigma part (std), must >= 0
 	std = output[:, z_dim:]
-	std = tf.to_float(tf.math.softplus(std)) + 1e-6
+	std = tf.math.softplus(std) + 1e-6
 	# over
-	return miu, std
+	return tf.to_float(miu), tf.to_float(std)
 
 # FC decoder
-def Decoder_FC(z, n_hidden, img_size, keep_prob):
-	''' input:	z --- the input code as 1D vector (dtype=tf.float32)
+def Decoder_FC(z, n_hidden, z_dim, img_size):
+	''' input:	z --- the input code as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32)
 				n_hidden --- FC layer hidden units
-				img_size --- length of MNIST image as 1D vector 
-				keep_prob --- keep prob for dropout
-		output:	Xr --- the reconstructed MNIST image as 1D vector (dtype=tf.float32) '''
-	# get code dimensions
-	z_dim = z.get_shape()[1]
+				z_dim --- code dimensions
+				img_size --- length of MNIST image, L 
+		output:	logits_before_softmax --- logits to generate pixelwise likelihood of reconstruction (shape=(B,L,256), dtype=tf.float32)
+				likelihood --- pixelwise likelihood of reconstruction (shape=(B,L,256), dtype=tf.float32)
+				Xr --- the reconstructed MNIST image as batch of 1D vectors (shape=(B,L), dtype=tf.int32) '''
 	# build 1st FC layer
 	feature = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
 								 activation='relu')(z)
-	# dropout
-	feature = keras.layers.Dropout(1-keep_prob)(feature)
 	# build 2nd FC layer
 	feature = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
 								 activation='relu')(feature)
-	# dropout
-	feature = keras.layers.Dropout(1-keep_prob)(feature)
-	# output layer
-	Xr = keras.layers.Dense(units=img_size, activation='softmax')(feature)
-	Xr = Xr * 256
+	# output layer, here we use a 1x1 conv kernel to generate the logits
+	#logits_before_softmax = keras.layers.Dense(units=img_size*256,
+	#										   kernel_initializer='he_normal', 
+	#										   activation=None)(feature)
+	feature = tf.reshape(feature, shape=(None, img_size, 1, 1))		# reshape to BHWC format
+	logits_before_softmax = keras.layers.Conv2D(filters=256,
+												kernel_size=(1,1),
+												strides=(1,1),
+												padding='SAME',
+												activation=None)(feature)
+	# reshape back to shape=(B, L, 256)
+	logits_before_softmax = tf.reshape(logits_before_softmax, shape=(None,img_size,256))
+	# compute the pixelwise likelihood predictions
+	likelihood = tf.nn.softmax(logits_before_softmax, axis=-1)
+	# reconstruct the image
+	Xr = tf.math.argmax(likelihood, axis=-1, output_type=tf.int32)
 	# over
-	return Xr
+	return logits_before_softmax, likelihood, Xr
 
-# compute the reconstruction loss part
-def ReconLoss(X, Xr):
-	''' input:	X --- input MNIST image as a 1D vector (dtype=tf.uint8)
-				Xr --- the reconstructed MNIST image as 1D vector (dtype=tf.float32)
-		output:	loss --- output loss '''
-	# we use cross-entropy as loss metric
-	batch_loss = keras.losses.sparse_categorical_crossentropy(y_true=tf.to_float(X), y_pred=Xr)
+# compute the reconstruction loss
+def ReconLoss(X, logits_before_softmax):
+	''' input:	X --- input MNIST image as batch of 1D vectors (shape=(B,L), dtype=tf.int32)
+				logits_before_softmax --- logits to generate pixelwise likelihood of reconstruction (shape=(B,L,256), dtype=tf.float32)
+		output:	batch_loss --- batch of reconstruction loss (shape=(B,)) '''
+	# the cross entropy describes the likelihood between 2 distributions (p and q), which is what we want to maximize here : KL(p||q) = Sigma{p*log(q/p)}
+	# the 'cross entropy loss' usually used in DL platform can be expressed as :
+	# H(p,q) = -Sigma{plog(q)}
+	# so KL(p||q) = H(p) + H(p,q)
+	# where p is our known distribution to fit (the posterior distribution of variable X), so H(p) is constant
+	# that is to say, KL(p||q) and H(p,q) is just the same here
+	# so we just use cross-entropy loss as loss metric, which we would like to minimize
+	batch_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=X, 
+							logits=logits_before_softmax, name='reconstruction_loss')
+	batch_loss = tf.reduce_sum(batch_loss, -1)
 	# over
-	return tf.reduce_mean(batch_loss)
+	return batch_loss
 
-
+# compute the KL divergence between prior and posterior distributions
+def KL(miu, std):
+	''' input:	miu ---the sampling distribution's mean as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) 
+				std ---the sampling distribution's sigma as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32)
+		output:	kl --- KL divergence of a batch (shape=(B,) '''
+	kl = 0.5*(tf.math.square(miu) + tf.math.square(std) - tf.math.log(1e-8 + tf.math.square(std)) - 1)
+	# over
+	return kl
 	

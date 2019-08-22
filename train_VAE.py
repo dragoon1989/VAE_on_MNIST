@@ -1,22 +1,237 @@
 import tensorflow as tf
 
 import VAE
+from read_MNIST import MNIST_IMG_X
+from read_MNIST import MNIST_IMG_Y
+from read_MNIST import load_mnist
+from read_MNIST import BuildPipeline
 
 
 ############### global configs ################
-n_hidden = tf.placeholder(tf.int32, shape=())
-z_dim = tf.placeholder(tf.int32, shape=())
-keep_prob = tf.placeholder(tf.float32, shape=())
+n_hidden = 512
+z_dim = 4
+lr0 = 1e-5
+lr = tf.placeholder(dtype=tf.float32, shape=(), name='learning_rate')
+train_batch_size = 32
+test_batch_size = 32
+
+dataset_path = 'MNIST'
+summary_path = './tensorboard/'
+summary_name = 'summary-default'    # tensorboard default summary dir
+
+# set global step counter
+global_step = tf.Variable(initial_value=0, trainable=False, name='global_step')
 
 ############### the input pipeline part ################
+# pre-load numpy data
+np_train_data = load_mnist(dataset_path, 'train')
+np_test_data = load_mnist(dataset_path, 'test')
 
+# placeholder for feeding numpy data to dataset
+np_images_plh = tf.placeholder(dtype=tf.int32, shape=(None, MNIST_IMG_X*MNIST_IMG_Y))
 
+# construct datasets from numpy data
+train_dataset = BuildPipeline(np_images_plh, train_batch_size, 1)
+test_dataset = BuildPipeline(np_images_plh, test_batch_size, 1)
 
-############### build the training pipeline ################
-X = tf.placeholder(tf.uint8, shape=(None, IMG_X*IMG_Y))
+# define iterators of datasets
+train_iterator = train_dataset.make_initializable_iterator()
+test_iterator = test_dataset.make_initializable_iterator()
 
-miu, std = VAE.Encoder_FC(X=X, n_hidden=n_hidden, z_dim=zdim, keep_prob=keep_prob)
+train_dataset_handle = train_iterator.string_handle()
+test_dataset_handle = test_iterator.string_handle()
+
+# define shared iterator for redirecion
+iterator_handle = tf.placeholder(dtype=tf.string, shape=None)
+iterator = tf.data.Iterator.from_string_handle(iterator_handle, train_iterator.output_types)
+
+images = iterator.get_next()
+
+############### build the VAE pipeline ################
+X = tf.placeholder(tf.int32, shape=(None, MNIST_IMG_X*MNIST_IMG_Y))
+
+# encode
+miu, std = VAE.Encoder_FC(X=X, n_hidden=n_hidden, z_dim=z_dim)
 
 # sampling code from generated distributions
 z = miu + std * tf.random.normal(shape=tf.shape(miu), mean=0.0, stddev=1.0, dtype=tf.float32)
 
+# decode
+logits_before_softmax, likelihood, Xr = VAE.Decoder_FC(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
+
+# compute the total loss (averaged on batch size)
+loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
+loss = tf.reduce_mean(loss)
+
+# compute the prediction accuracy (averaged on batch size)
+accuracy = tf.to_float(tf.math.equal(X, Xr))
+accuracy = tf.reduce_mean(accuracy)
+
+# add summary hooks here
+tf.summary.scalar(name='loss', tensor=loss)		# summary the loss
+tf.summary.scalar(name='accuracy', tensor=accuracy)	# summary the accuracy
+
+# minimize the loss
+train_op = tf.train.AdamOptimizer(learning_rate=lr,
+								  beta1=0.9,
+								  beta2=0.999,
+								  epsilon=1e-08).minimize(loss, global_step=global_step)
+
+
+# define the training process
+def train(cur_lr, sess, summary_writer, summary_op):
+	'''
+	input:
+		cur_lr : learning rate for current epoch (scalar)
+		sess : tf session to run the training process
+		summary_writer : summary writer
+		summary_op : summary to write in training process
+	'''
+	# get iterator handles
+	train_dataset_handle_ = sess.run(train_dataset_handle)
+	# re-initialize the iterator (because the dataset only repeat one epoch)
+	sess.run(train_iterator.initializer)
+	# training loop
+	current_batch = 0
+	while True:
+		try:
+			# read batch of data from training dataset
+			train_img_ = sess.run(images, feed_dict={np_images_plh: np_train_data,
+													 iterator_handle: train_dataset_handle_})
+			# feed this batch to VAE
+			loss_, accuracy_, global_step_, summary_buff_ = \
+				sess.run([train_op, loss, accuracy, global_step, summary_op],
+						feed_dict={X : train_img_,
+								   lr: cur_lr})
+			current_batch += 1
+			# print indication info
+			if current_batch % 20 == 0:
+				print('\tbatch number = %d, loss = %.2f, acc = %.2f%%' % (current_batch, loss_, 100*accuracy_))
+				# write training summary
+				summary_writer.add_summary(summary=summary_buff, global_step=global_step_val)
+		except tf.errors.OutOfRangeError:
+			break
+	# over
+
+
+# build the test process
+def test(sess, summary_writer):
+	'''
+	input :
+		sess : tf session to run the validation
+		summary_writer : summary writer
+	'''
+	# get iterator handles
+	test_dataset_handle_ = sess.run(test_dataset_handle)
+	# re-initialize the iterator (because the dataset only repeat one epoch)
+	sess.run(test_iterator.initializer)
+	# validation loop
+	correctness = 0
+	loss_val = 0
+	test_dataset_size = 0
+	while True:
+		try:
+			# read batch of data from test dataset
+			test_img_ = sess.run(images, feed_dict={np_images_plh: np_test_data,
+													iterator_handle: test_dataset_handle_})
+			cur_batch_size = test_img_.shape[0]
+			test_dataset_size += cur_batch_size
+			# test on single batch
+			batch_accuracy_, batch_loss_, global_step_ = \
+						sess.run([accuracy, loss, global_step],
+								 feed_dict={X : test_img_})
+
+			correctness += np.asscalar(batch_accuracy_*cur_batch_size*IMG_X*IMG_Y)
+			loss_val += np.asscalar(loss_*cur_batch_size)
+		except tf.errors.OutOfRangeError:
+			break
+	# compute accuracy and loss after a whole epoch
+	current_acc = correctness/test_dataset_size
+	loss_val /= test_dataset_size
+	# print and summary
+	msg = 'test accuracy = %.2f%%' % (current_acc*100)
+	test_acc_summary = tf.Summary(value=[tf.Summary.Value(tag='test_accuracy',simple_value=current_acc)])
+	test_loss_summary = tf.Summary(value=[tf.Summary.Value(tag='test_loss', simple_value=loss_val)])
+	# write summary
+	summary_writer.add_summary(summary=test_acc_summary, global_step=global_step_val)
+	summary_writer.add_summary(summary=test_loss_summary, global_step=global_step_val)
+	
+	# print message
+	print(msg)
+	# over
+	return current_acc
+
+
+# simple function to adjust learning rate between epochs
+def update_learning_rate(cur_epoch):
+	'''
+	input:
+		epoch : current No. of epoch
+	output:
+		cur_lr : learning rate for current epoch
+	'''
+	cur_lr = lr0
+	if cur_epoch > 10:
+		cur_lr = lr0/10
+	if cur_epoch >20:
+		cur_lr = lr0/100
+	if cur_epoch >30:
+		cur_lr = lr0/1000
+	if cur_epoch >40:
+		cur_lr = lr0/2000
+	# over
+	return cur_lr
+	
+	
+
+###################### main entrance ######################
+if __name__ == "__main__":
+	# set tensorboard summary path
+	try:
+		options, args = getopt.getopt(sys.argv[1:], '', ['logdir='])
+	except getopt.GetoptError:
+		print('invalid arguments!')
+		sys.exit(-1)
+	for option, value in options:
+		if option == '--logdir':
+			summary_name = value
+
+	# train and test the model
+	cur_lr = lr0
+	best_acc = 0
+	with tf.Session() as sess:
+		# initialize variables
+		sess.run(tf.global_variables_initializer())
+		sess.run(tf.local_variables_initializer())
+
+		# initialize IO
+		# build tf saver
+		saver = tf.train.Saver()
+		# build the tensorboard summary
+		summary_writer = tf.summary.FileWriter(summary_path+summary_name)
+		train_summary_op = tf.summary.merge_all()
+
+		# train in epochs
+		for cur_epoch in range(1, num_epochs+1):
+			# print epoch title
+			print('Current epoch No.%d, learning rate = %.2e' % (cur_epoch, cur_lr))
+			# train
+			train(cur_lr, sess, summary_writer, train_summary_op)
+			# validate
+			cur_acc = test(sess, summary_writer)
+			# update learning rate if necessary
+			cur_lr = update_learning_rate(cur_epoch)
+
+			if cur_acc > best_acc:
+				# save check point
+				saver.save(sess=sess,save_path=model_path+best_model_ckpt)
+				# print message
+				print('model improved, save the ckpt.')
+				# update best loss
+				best_acc = cur_acc
+			else:
+				# print message
+				print('model not improved.')
+	# finished
+	print('++++++++++++++++++++++++++++++++++++++++')
+	print('best accuracy = %.2f%%.'%(best_acc*100))
