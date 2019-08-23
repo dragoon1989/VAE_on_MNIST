@@ -1,3 +1,8 @@
+import os
+import sys
+import getopt
+
+import numpy as np
 import tensorflow as tf
 
 import VAE
@@ -14,10 +19,15 @@ lr0 = 1e-5
 lr = tf.placeholder(dtype=tf.float32, shape=(), name='learning_rate')
 train_batch_size = 32
 test_batch_size = 32
+num_epochs = 50
 
 dataset_path = 'MNIST'
+# tensorboard summary will be saved as summary_path/summary_name
 summary_path = './tensorboard/'
-summary_name = 'summary-default'    # tensorboard default summary dir
+summary_name = 'summary-default'
+# current optimal model checkpoint will be saved as model_path/best_model_ckpt
+model_path = './ckpts/'
+best_model_ckpt = 'best.ckpt'		# check point path
 
 # set global step counter
 global_step = tf.Variable(initial_value=0, trainable=False, name='global_step')
@@ -90,7 +100,7 @@ def train(cur_lr, sess, summary_writer, summary_op):
 	# get iterator handles
 	train_dataset_handle_ = sess.run(train_dataset_handle)
 	# re-initialize the iterator (because the dataset only repeat one epoch)
-	sess.run(train_iterator.initializer)
+	sess.run(train_iterator.initializer, feed_dict={np_images_plh: np_train_data})
 	# training loop
 	current_batch = 0
 	while True:
@@ -99,16 +109,16 @@ def train(cur_lr, sess, summary_writer, summary_op):
 			train_img_ = sess.run(images, feed_dict={np_images_plh: np_train_data,
 													 iterator_handle: train_dataset_handle_})
 			# feed this batch to VAE
-			loss_, accuracy_, global_step_, summary_buff_ = \
+			_, loss_, accuracy_, global_step_, summary_buff_ = \
 				sess.run([train_op, loss, accuracy, global_step, summary_op],
 						feed_dict={X : train_img_,
 								   lr: cur_lr})
 			current_batch += 1
 			# print indication info
-			if current_batch % 20 == 0:
+			if current_batch % 100 == 0:
 				print('\tbatch number = %d, loss = %.2f, acc = %.2f%%' % (current_batch, loss_, 100*accuracy_))
 				# write training summary
-				summary_writer.add_summary(summary=summary_buff, global_step=global_step_val)
+				summary_writer.add_summary(summary=summary_buff_, global_step=global_step_)
 		except tf.errors.OutOfRangeError:
 			break
 	# over
@@ -124,7 +134,7 @@ def test(sess, summary_writer):
 	# get iterator handles
 	test_dataset_handle_ = sess.run(test_dataset_handle)
 	# re-initialize the iterator (because the dataset only repeat one epoch)
-	sess.run(test_iterator.initializer)
+	sess.run(test_iterator.initializer, feed_dict={np_images_plh: np_test_data})
 	# validation loop
 	correctness = 0
 	loss_val = 0
@@ -138,23 +148,22 @@ def test(sess, summary_writer):
 			test_dataset_size += cur_batch_size
 			# test on single batch
 			batch_accuracy_, batch_loss_, global_step_ = \
-						sess.run([accuracy, loss, global_step],
-								 feed_dict={X : test_img_})
+						sess.run([accuracy, loss, global_step], feed_dict={X : test_img_})
 
 			correctness += np.asscalar(batch_accuracy_*cur_batch_size*IMG_X*IMG_Y)
 			loss_val += np.asscalar(loss_*cur_batch_size)
 		except tf.errors.OutOfRangeError:
 			break
 	# compute accuracy and loss after a whole epoch
-	current_acc = correctness/test_dataset_size
+	current_acc = correctness/test_dataset_size/MNIST_IMG_X/MNIST_IMG_Y
 	loss_val /= test_dataset_size
 	# print and summary
-	msg = 'test accuracy = %.2f%%' % (current_acc*100)
+	msg = 'test accuracy = %.2f%%, loss = %.2f' % (current_acc*100, loss_val)
 	test_acc_summary = tf.Summary(value=[tf.Summary.Value(tag='test_accuracy',simple_value=current_acc)])
 	test_loss_summary = tf.Summary(value=[tf.Summary.Value(tag='test_loss', simple_value=loss_val)])
 	# write summary
-	summary_writer.add_summary(summary=test_acc_summary, global_step=global_step_val)
-	summary_writer.add_summary(summary=test_loss_summary, global_step=global_step_val)
+	summary_writer.add_summary(summary=test_acc_summary, global_step=global_step_)
+	summary_writer.add_summary(summary=test_loss_summary, global_step=global_step_)
 	
 	# print message
 	print(msg)

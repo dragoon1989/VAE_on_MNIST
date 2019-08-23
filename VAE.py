@@ -9,6 +9,8 @@ def Encoder_FC(X, n_hidden, z_dim):
 				z_dim --- output code dimensions
 		output:	miu --- the sampling distribution's mean as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) 
 				std --- the sampling distribution's sigma as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) '''
+	# first convet X to dtype=tf.float32 ?
+	X = tf.to_float(X)
 	# build 1st FC layer
 	feature = keras.layers.Dense(units=n_hidden,
 								 kernel_initializer='he_normal', 
@@ -47,17 +49,18 @@ def Decoder_FC(z, n_hidden, z_dim, img_size):
 								 kernel_initializer='he_normal', 
 								 activation='relu')(feature)
 	# output layer, here we use a 1x1 conv kernel to generate the logits
-	#logits_before_softmax = keras.layers.Dense(units=img_size*256,
-	#										   kernel_initializer='he_normal', 
-	#										   activation=None)(feature)
-	feature = tf.reshape(feature, shape=(None, img_size, 1, 1))		# reshape to BHWC format
+	feature = keras.layers.Dense(units=img_size*256,
+								 kernel_initializer='he_normal', 
+								 activation=None)(feature)
+	batch_size =tf.shape(feature)[0]
+	feature = tf.reshape(feature, shape=(batch_size, img_size, 1, 1))	# reshape to BHWC format
 	logits_before_softmax = keras.layers.Conv2D(filters=256,
 												kernel_size=(1,1),
 												strides=(1,1),
 												padding='SAME',
 												activation=None)(feature)
 	# reshape back to shape=(B, L, 256)
-	logits_before_softmax = tf.reshape(logits_before_softmax, shape=(None,img_size,256))
+	logits_before_softmax = tf.reshape(logits_before_softmax, shape=(batch_size,img_size,256))
 	# compute the pixelwise likelihood predictions
 	likelihood = tf.nn.softmax(logits_before_softmax, axis=-1)
 	# reconstruct the image
@@ -88,7 +91,7 @@ def KL(miu, std):
 	''' input:	miu ---the sampling distribution's mean as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32) 
 				std ---the sampling distribution's sigma as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32)
 		output:	kl --- KL divergence of a batch (shape=(B,) '''
-	kl = 0.5*(tf.math.square(miu) + tf.math.square(std) - tf.math.log(1e-8 + tf.math.square(std)) - 1)
+	kl = 0.5*tf.reduce_sum(tf.math.square(miu) + tf.math.square(std) - tf.math.log(1e-8 + tf.math.square(std)) - 1, axis=1)
 	# over
 	return kl
 	
