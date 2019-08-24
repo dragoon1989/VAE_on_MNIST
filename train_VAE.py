@@ -25,9 +25,8 @@ dataset_path = 'MNIST'
 # tensorboard summary will be saved as summary_path/summary_name
 summary_path = './tensorboard/'
 summary_name = 'summary-default'
-# current optimal model checkpoint will be saved as model_path/best_model_ckpt
+# current optimal model checkpoint will be saved under model_path
 model_path = './ckpts/'
-best_model_ckpt = 'best.ckpt'		# check point path
 
 # set global step counter
 global_step = tf.Variable(initial_value=0, trainable=False, name='global_step')
@@ -37,25 +36,26 @@ global_step = tf.Variable(initial_value=0, trainable=False, name='global_step')
 np_train_data = load_mnist(dataset_path, 'train')
 np_test_data = load_mnist(dataset_path, 'test')
 
-# placeholder for feeding numpy data to dataset
-np_images_plh = tf.placeholder(dtype=tf.int32, shape=(None, MNIST_IMG_X*MNIST_IMG_Y))
+with tf.name_scope('input-pipeline'):
+	# placeholder for feeding numpy data to dataset
+	np_images_plh = tf.placeholder(dtype=tf.int32, shape=(None, MNIST_IMG_X*MNIST_IMG_Y))
 
-# construct datasets from numpy data
-train_dataset = BuildPipeline(np_images_plh, train_batch_size, 1)
-test_dataset = BuildPipeline(np_images_plh, test_batch_size, 1)
+	# construct datasets from numpy data
+	train_dataset = BuildPipeline(np_images_plh, train_batch_size, 1)
+	test_dataset = BuildPipeline(np_images_plh, test_batch_size, 1)
 
-# define iterators of datasets
-train_iterator = train_dataset.make_initializable_iterator()
-test_iterator = test_dataset.make_initializable_iterator()
+	# define iterators of datasets
+	train_iterator = train_dataset.make_initializable_iterator()
+	test_iterator = test_dataset.make_initializable_iterator()
 
-train_dataset_handle = train_iterator.string_handle()
-test_dataset_handle = test_iterator.string_handle()
+	train_dataset_handle = train_iterator.string_handle()
+	test_dataset_handle = test_iterator.string_handle()
 
-# define shared iterator for redirecion
-iterator_handle = tf.placeholder(dtype=tf.string, shape=None)
-iterator = tf.data.Iterator.from_string_handle(iterator_handle, train_iterator.output_types)
+	# define shared iterator for redirecion
+	iterator_handle = tf.placeholder(dtype=tf.string, shape=None)
+	iterator = tf.data.Iterator.from_string_handle(iterator_handle, train_iterator.output_types)
 
-images = iterator.get_next()
+	images = iterator.get_next()
 
 ############### build the VAE pipeline ################
 X = tf.placeholder(tf.int32, shape=(None, MNIST_IMG_X*MNIST_IMG_Y))
@@ -70,22 +70,26 @@ z = miu + std * tf.random.normal(shape=tf.shape(miu), mean=0.0, stddev=1.0, dtyp
 logits_before_softmax, likelihood, Xr = VAE.Decoder_FC(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
 
 # compute the total loss (averaged on batch size)
-loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
-loss = tf.reduce_mean(loss)
+with tf.name_scope('training'):
+	loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
+	loss = tf.reduce_mean(loss)
 
-# compute the prediction accuracy (averaged on batch size)
-accuracy = tf.to_float(tf.math.equal(X, Xr))
-accuracy = tf.reduce_mean(accuracy)
+	# compute the prediction accuracy (averaged on batch size)
+	accuracy = tf.to_float(tf.math.equal(X, Xr))
+	accuracy = tf.reduce_mean(accuracy)
+	
+	# minimize the loss
+	train_op = tf.train.AdamOptimizer(learning_rate=lr,
+									  beta1=0.9,
+									  beta2=0.999,
+									  epsilon=1e-08).minimize(loss, global_step=global_step)
 
 # add summary hooks here
-tf.summary.scalar(name='loss', tensor=loss)		# summary the loss
-tf.summary.scalar(name='accuracy', tensor=accuracy)	# summary the accuracy
+with tf.name_scope('summary'):
+	tf.summary.scalar(name='loss', tensor=loss)		# summary the loss
+	tf.summary.scalar(name='accuracy', tensor=accuracy)	# summary the accuracy
 
-# minimize the loss
-train_op = tf.train.AdamOptimizer(learning_rate=lr,
-								  beta1=0.9,
-								  beta2=0.999,
-								  epsilon=1e-08).minimize(loss, global_step=global_step)
+
 
 
 # define the training process
@@ -214,8 +218,9 @@ if __name__ == "__main__":
 		sess.run(tf.local_variables_initializer())
 
 		# initialize IO
-		# build tf saver
-		saver = tf.train.Saver()
+		# build tf saver, we only save the variables in encoder and decoder networks
+		encoder_saver = tf.train.Saver(tf.get_collection('encoder_var', 'encoder-fc'))
+		decoder_saver = tf.train.Saver(tf.get_collection('decoder_var', 'decoder-fc'))
 		# build the tensorboard summary
 		summary_writer = tf.summary.FileWriter(summary_path+summary_name)
 		train_summary_op = tf.summary.merge_all()
@@ -233,7 +238,8 @@ if __name__ == "__main__":
 
 			if cur_acc > best_acc:
 				# save check point
-				saver.save(sess=sess,save_path=model_path+best_model_ckpt)
+				encoder_saver.save(sess=sess,save_path=model_path + 'encoder.ckpt')
+				decoder_saver.save(sess=sess,save_path=model_path + 'decoder.ckpt')
 				# print message
 				print('model improved, save the ckpt.')
 				# update best loss
