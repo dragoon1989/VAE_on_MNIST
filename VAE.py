@@ -19,7 +19,7 @@ def Encoder_FC(X, n_hidden, z_dim):
 								 kernel_initializer='he_normal', 
 								 activation='relu')
 		# save the variables
-		tf.add_to_collection('encoder_var', fc1.variables())
+		tf.add_to_collection('encoder_var', fc1.variables)
 		# apply the layer
 		feature = fc1.apply(X)
 		
@@ -28,7 +28,7 @@ def Encoder_FC(X, n_hidden, z_dim):
 								 kernel_initializer='he_normal', 
 								 activation='relu')
 		# save the variables
-		tf.add_to_collection('encoder_var', fc2.variables())
+		tf.add_to_collection('encoder_var', fc2.variables)
 		# apply the layer
 		feature = fc2.apply(feature)
 		
@@ -37,7 +37,7 @@ def Encoder_FC(X, n_hidden, z_dim):
 									   kernel_initializer='he_normal', 
 									   activation=None)
 		# save the variables
-		tf.add_to_collection('encoder_var', out_layer.variables())
+		tf.add_to_collection('encoder_var', out_layer.variables)
 		# apply the layer
 		output = out_layer.apply(feature)
 		
@@ -66,7 +66,7 @@ def Decoder_FC(z, n_hidden, z_dim, img_size):
 								 kernel_initializer='he_normal', 
 								 activation='relu')
 		# save the layer
-		tf.add_to_collection('decoder_var', fc1.variables())
+		tf.add_to_collection('decoder_var', fc1.variables)
 		# apply the layer
 		feature = fc1.apply(z)
 		# build 2nd FC layer
@@ -74,7 +74,7 @@ def Decoder_FC(z, n_hidden, z_dim, img_size):
 								 kernel_initializer='he_normal', 
 								 activation='relu')
 		# save the layer
-		tf.add_to_collection('decoder_var', fc2.variables())
+		tf.add_to_collection('decoder_var', fc2.variables)
 		# apply the layer
 		feature = fc2.apply(feature)
 		
@@ -83,9 +83,9 @@ def Decoder_FC(z, n_hidden, z_dim, img_size):
 									   kernel_initializer='he_normal', 
 									   activation=None)
 		# save the layer
-		tf.add_to_collection('decoder_var', out_layer.variables())
+		tf.add_to_collection('decoder_var', out_layer.variables)
 		# apply the layer
-		feature = outlayer.apply(feature)
+		feature = out_layer.apply(feature)
 		
 		# reshape the output to shape=(B, L, 256)
 		logits_before_softmax = tf.reshape(feature, shape=(tf.shape(feature)[0], img_size, 256))
@@ -95,6 +95,51 @@ def Decoder_FC(z, n_hidden, z_dim, img_size):
 		Xr = tf.math.argmax(likelihood, axis=-1, output_type=tf.int32)
 		# over
 		return logits_before_softmax, likelihood, Xr
+
+# Bernoulli Distribution Decoder
+# FC decoder
+def Decoder_FC_B(z, n_hidden, z_dim, img_size):
+	''' input:	z --- the input code as batch of 1D vectors (shape=(B,z_dim), dtype=tf.float32)
+				n_hidden --- FC layer hidden units
+				z_dim --- code dimensions
+				img_size --- length of MNIST image, L 
+		output:	likelihood --- pixelwise likelihood of reconstruction (shape=(B,L), dtype=tf.float32)
+				Xr --- the reconstructed MNIST image as batch of 1D vectors (shape=(B,L), dtype=tf.uint8) '''
+	# create a scope for decoder variable nodes
+	# we will add these variables to a collection for save and restore
+	with tf.variable_scope('decoder-fc-bi'):
+		# build 1st FC layer
+		fc1 = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
+								 activation='relu')
+		# save the layer
+		tf.add_to_collection('decoder_var', fc1.variables)
+		# apply the layer
+		feature = fc1.apply(z)
+		# build 2nd FC layer
+		fc2 = keras.layers.Dense(units=n_hidden,
+								 kernel_initializer='he_normal', 
+								 activation='relu')
+		# save the layer
+		tf.add_to_collection('decoder_var', fc2.variables)
+		# apply the layer
+		feature = fc2.apply(feature)
+		
+		# output layer
+		out_layer = keras.layers.Dense(units=img_size,
+									   kernel_initializer='he_normal', 
+									   activation=None)
+		# save the layer
+		tf.add_to_collection('decoder_var', out_layer.variables)
+		# apply the layer
+		feature = out_layer.apply(feature)
+
+		# compute the pixelwise likelihood predictions (use sigmoid)
+		likelihood = tf.math.sigmoid(feature)
+		# reconstruct the image
+		Xr = tf.cast(likelihood*256, dtype=tf.uint8)
+		# over
+		return likelihood, Xr
 
 # compute the reconstruction loss
 def ReconLoss(X, logits_before_softmax):
@@ -110,6 +155,17 @@ def ReconLoss(X, logits_before_softmax):
 	# so we just use cross-entropy loss as loss metric, which we would like to minimize
 	batch_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=X, 
 							logits=logits_before_softmax, name='reconstruction_loss')
+	batch_loss = tf.reduce_sum(batch_loss, -1)
+	# over
+	return batch_loss
+
+# compute the reconstruction loss for Bernoulli distribution
+def ReconLoss_B(X, y):
+	''' input:	X --- input MNIST image as batch of 1D vectors (shape=(B,L), dtype=tf.int32)
+				y --- pixelwise likelihood of reconstruction (shape=(B,L), dtype=tf.float32)
+		output:	batch_loss --- batch of reconstruction loss (shape=(B,)) '''
+	batch_loss = X*tf.math.log(y) + (1-X)*tf.math.log(1-y)
+	batch_loss = -batch_loss
 	batch_loss = tf.reduce_sum(batch_loss, -1)
 	# over
 	return batch_loss

@@ -14,8 +14,8 @@ from read_MNIST import BuildPipeline
 
 ############### global configs ################
 n_hidden = 512
-z_dim = 4
-lr0 = 1e-5
+z_dim = 2
+lr0 = 1e-2
 lr = tf.placeholder(dtype=tf.float32, shape=(), name='learning_rate')
 train_batch_size = 32
 test_batch_size = 32
@@ -33,8 +33,8 @@ global_step = tf.Variable(initial_value=0, trainable=False, name='global_step')
 
 ############### the input pipeline part ################
 # pre-load numpy data
-np_train_data = load_mnist(dataset_path, 'train')
-np_test_data = load_mnist(dataset_path, 'test')
+np_train_data, _ = load_mnist(dataset_path, 'train')
+np_test_data, _ = load_mnist(dataset_path, 'test')
 
 with tf.name_scope('input-pipeline'):
 	# placeholder for feeding numpy data to dataset
@@ -67,11 +67,14 @@ miu, std = VAE.Encoder_FC(X=X, n_hidden=n_hidden, z_dim=z_dim)
 z = miu + std * tf.random.normal(shape=tf.shape(miu), mean=0.0, stddev=1.0, dtype=tf.float32)
 
 # decode
-logits_before_softmax, likelihood, Xr = VAE.Decoder_FC(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
+#logits_before_softmax, likelihood, Xr = VAE.Decoder_FC(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
+likelihood, Xr = VAE.Decoder_FC_B(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
 
 # compute the total loss (averaged on batch size)
 with tf.name_scope('training'):
-	loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
+	#loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
+	likelihood = tf.clip_by_value(likelihood, 1e-6, 1-1e-6)
+	loss = VAE.ReconLoss_B(X, likelihood)
 	loss = tf.reduce_mean(loss)
 
 	# compute the prediction accuracy (averaged on batch size)

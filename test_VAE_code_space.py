@@ -72,6 +72,9 @@ if __name__ == "__main__":
 			summary_name = value
 
 	with tf.Session() as sess:
+		# initialization
+		sess.run(tf.global_variables_initializer())
+		sess.run(tf.local_variables_initializer())
 		# restore the decoder part
 		decoder_saver = tf.train.Saver(model_path + 'decoder.ckpt')
 		# build the tensorboard summary
