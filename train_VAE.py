@@ -74,7 +74,7 @@ likelihood, Xr = VAE.Decoder_FC_B(z, n_hidden, z_dim, MNIST_IMG_X*MNIST_IMG_Y)
 with tf.name_scope('training'):
 	#loss = VAE.ReconLoss(X, logits_before_softmax) + VAE.KL(miu, std)
 	likelihood = tf.clip_by_value(likelihood, 1e-6, 1-1e-6)
-	loss = VAE.ReconLoss_B(X, likelihood)
+	loss = VAE.ReconLoss_B(X, likelihood) + VAE.KL(miu, std)
 	loss = tf.reduce_mean(loss)
 
 	# compute the prediction accuracy (averaged on batch size)

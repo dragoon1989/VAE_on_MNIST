@@ -34,8 +34,8 @@ def load_mnist(path, kind='train'):
 		images = struct.unpack(format, imgpath.read())
 		# reshape and convert
 		images = np.reshape(images, [num, rows*cols]).astype(np.int32)
-		# over
-		return images, labels
+	# over
+	return images, labels
 
 
 # build a pipeline to convert MINIST data from numpy arrays to tf dataset
